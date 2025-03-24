@@ -1,0 +1,227 @@
+
+if(!require(Hmisc)) {
+  install.packages("Hmisc")
+}
+if(!require(dplyr)) {
+  install.packages("dplyr")
+}
+if(!require(car)) {
+  install.packages("car")
+}
+
+if(!require(ggplot2)) {
+  install.packages("ggplot2")
+}
+library(ggplot2)
+library(ggcorrplot)
+library(ggpubr)
+library(car)
+library(FSA)
+library(dunn.test)
+library(Hmisc)
+library(dplyr)
+
+data<-read.csv2("C:/Users/pc/Desktop/ProjektR/przykladoweDane-Projekt (2).csv")
+
+setwd("C:/Users/pc/Desktop/ProjektR")
+
+#View(data)
+########################## 1 i 2 ########################
+
+# sprawdza gdzie są braki
+braki<- which (is.na(data),arr.ind = TRUE)
+#print(braki)
+for(i in 1:nrow(braki)){
+  if(i==1){
+    print("1 wartość to wiersz 2 wartość to kolumna")
+  }
+  cat("brakuje danych w tej komórce",braki[i,],"\n")
+}
+
+# utworzenie grup badanych (chor1 chor2 kontrolne)
+data_group <- list() 
+for(group in unique(data[,1])){ # unikalne wartosci w kolumnach każdej grupy
+  data_group[[length(data_group)+1]] <- data[data[,1] == group,] 
+}
+for(i in 1:length(data_group)){ # przechodzi po grupach
+  for(j in colnames(data)){
+    if(any(is.na(data_group[[i]][[j]]))){ # znajduje wartości puste
+      data_group[[i]][j] <- impute(data_group[[i]][j], mean) # przypisuje średnią z grupy w miejsca puste
+    }
+  }
+  #print(data_group[[i]])
+  
+}
+
+#wprowadzenie zmian do data
+for(i in 1:length(data_group)) {
+  group_name <- data_group[[i]][1, 1]
+  data[data[,1] == group_name, ] <- data_group[[i]]
+}
+# sprawdza wartości odstające
+all_stats <- data.frame()
+for(j in 1:length(data_group)){ # przechodzi po każdej grupie 
+  group_stats <- data.frame()
+  numeric_columns <- list(); 
+  for(i in 3:11){
+    stats <- boxplot.stats(data_group[[j]][, i])
+    # summary statistics
+    col_stats <- data.frame(
+      Group = data_group[[j]][1,1],
+      Variable = colnames(data)[i],
+      Min = round(min(data_group[[j]][, i], na.rm = TRUE),digits = 2),
+      Q1 = round(quantile(data_group[[j]][, i], 0.25, na.rm = TRUE),digits = 2),
+      Median = round(median(data_group[[j]][, i], na.rm = TRUE),digits = 2),
+      Q3 = round(quantile(data_group[[j]][, i], 0.75, na.rm = TRUE),digits = 2),
+      Max = round(max(data_group[[j]][, i], na.rm = TRUE),digits = 2),
+      Mean = round(mean(data_group[[j]][, i], na.rm = TRUE),digits = 2),
+      Outliers = paste(round(stats$out, 2), collapse = ", ") 
+    )
+    group_stats <- bind_rows(group_stats, col_stats) # łączenie 
+  }
+  all_stats <- bind_rows(all_stats, group_stats)
+}
+
+write.csv2(all_stats, file = "statystyki.csv", row.names = FALSE)
+
+# wykonanie statystyk w pdf
+
+all_stats <- data.frame()
+pdf_file <- "Statystyki.pdf"
+pdf_status <- try(pdf(file = pdf_file), silent = TRUE)
+if (inherits(pdf_status, "try-error")) {
+  cat("Błąd otwarcia pliku PDF", pdf_file, "\n")
+} else {
+  cat("Plik PDF", pdf_file, "został otwarty.\n")
+  for(i in 3:11){
+    par(mfrow = c(2,2))
+    group_stats <- data.frame()
+    numeric_columns <- list(); 
+    for(j in 1:3){
+      stats <- tryCatch({
+        boxplot(data_group[[j]][, i], 
+                main = paste(data_group[[j]][1,1], colnames(data)[i]),
+                outcol = "red",
+                medcol = "blue",
+                col = "yellow")
+      }, error = function(e) NULL)
+      
+      if (!is.null(stats)) {
+        # summary statistics
+        col_stats <- data.frame(
+          Group = data_group[[j]][1,1],
+          Variable = colnames(data)[i],
+          Min = round(min(data_group[[j]][, i], na.rm = TRUE),digits = 2),
+          Q1 = round(quantile(data_group[[j]][, i], 0.25, na.rm = TRUE),digits = 2),
+          Median = round(median(data_group[[j]][, i], na.rm = TRUE),digits = 2),
+          Q3 = round(quantile(data_group[[j]][, i], 0.75, na.rm = TRUE),digits = 2),
+          Max = round(max(data_group[[j]][, i], na.rm = TRUE),digits = 2),
+          Mean = round(mean(data_group[[j]][, i], na.rm = TRUE),digits = 2),
+          Outliers = paste(round(stats$out, 2), collapse = ", ")
+        )
+        group_stats <- bind_rows(group_stats, col_stats)
+      }
+    }
+    # bind every group statistics 
+    plot.new()
+    all_stats <- bind_rows(all_stats, group_stats)
+  }
+  dev.off()
+}
+write.csv2(all_stats, file = "statystyki.csv", row.names = FALSE)
+
+############### 3 ##############
+
+data[,1] <- as.factor(data[,1])
+homogenious_relevant <- list()
+irregular_relevant <- list()
+for(col in 3:11){
+  normal_distribution <- 1
+  for(i in 1:3){
+    if(shapiro.test(data_group[[i]][,col])$p.value < 0.05){
+      normal_distribution <- 0
+    }
+  }
+  if(normal_distribution){
+    if(leveneTest(data[,colnames(data)[col]] ~ data[,1], data = data)$"Pr(>F)"[1] > 0.05){
+      # ANOVA test
+      if(summary(aov(data[,colnames(data)[col]] ~ data[,1], data = data))[[1]][["Pr(>F)"]][[1]] < 0.05){
+        cat(paste("homogenious: ", colnames(data)[col], "\n"))
+        t_results <- TukeyHSD(aov(data[,colnames(data)[col]] ~ data[,1], data = data))$`data[, 1]`
+        homogenious_relevant[[length(homogenious_relevant)+1]] <- as.data.frame(t_results)
+        names(homogenious_relevant)[length(homogenious_relevant)] <- colnames(data)[col]
+      }
+      next
+    }
+  }
+  # Kruskala test
+  if(kruskal.test(data[,colnames(data)[col]] ~ data[,1], data = data)$p.value < 0.05){
+    cat(paste("irregular: ", colnames(data)[col], "\n"))
+    d_results <- dunnTest(data[,colnames(data)[col]] ~ data[,1], data = data, method = "holm")$res
+    irregular_relevant[[length(irregular_relevant)+1]] <- d_results
+    names(irregular_relevant)[length(irregular_relevant)] <- colnames(data)[col]
+  }
+}
+
+homogenious_relevant_df <- do.call(rbind, homogenious_relevant)
+irregular_relevant_df <- do.call(rbind, irregular_relevant)
+write.csv2(homogenious_relevant_df, file = "homogenious_relevant.csv", row.names = FALSE)
+write.csv2(homogenious_relevant_df, file = "irregular_relevant.csv", row.names = FALSE)
+
+
+########################### 4 ###############################################
+
+correlation_type <- function(test){
+  if (test > 0.7) return("Bardzo mocna korelacja")
+  else if (test > 0.5) return("mocna dodatnia korelacja")
+  else if (test > 0.3) return("umiarkowana dodatnia korelacja")
+  else if (test > 0.2) return("słaba dodatnia korelacja")
+  else if (test > -0.2) return("brak korelacji")
+  else if (test > -0.3) return("słaba negatywna korelacja")
+  else if (test > -0.5) return("umiarkowana dodatnia korelacja")
+  else if (test > -0.7) return("silna negatywna korelacja")
+  else return("Bardzo mocna negatywna korelacja")
+}
+
+for(group in data_group) {
+  for(col1 in 3:11){
+    if(col1 == 11){
+      break
+    }
+    for(col2 in (col1+1):11){
+      if(length(unique(group[,col1])) != length(group[,col1]) || length(unique(group[,col2])) != length(group[,col2])){
+        test_result <- cor.test(group[,col1], group[,col2], method = "spearman", exact = FALSE)
+      }else{
+        test_results <- cor.test(group[,col1], group[,col2], method = "spearman")
+      }
+      print(paste(group[1,1], group[,col1], group[,col2], correlation_type(test_result$estimate)))
+    }
+  }
+}
+
+# wykresy
+
+for(group in data_group){
+  pdf(file = paste(group[1, 1], "correlation_plots.pdf", sep = ""), width = 10, height = 6)
+  for(col1 in 3:11){
+    if(col1 == 11){
+      break
+    }
+    for(col2 in (col1+1):11){
+      gg <- ggscatter(data = group, x = colnames(group)[col1], y = colnames(group)[col2],
+                      add = "reg.line", conf.int = TRUE,
+                      cor.coef = TRUE, cor.method = "spearman",
+                      color = "grupa" , fill = "grupa",
+                      palette = c("#99cc00"),
+                      ylab = paste(colnames(group)[col2], "[gl]", sep = ""),
+                      xlab = paste(colnames(group)[col1], "[t/l]", sep = "")
+      )
+      ggsave(paste0(group[1, 1], "", colnames(group)[col1], "vs", colnames(group)[col2], ".pdf"), gg)
+    }
+  }
+  dev.off()
+}
+
+
+
+
